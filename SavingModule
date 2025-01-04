@@ -1,0 +1,574 @@
+local Saving = {};
+local KNIT = nil;
+coroutine.wrap(function()KNIT = require(game.ReplicatedStorage:WaitForChild("KNIT"));end)();
+local Players = KNIT.Services.Players;
+local TeleportService = KNIT.Services.TeleportService;
+local ReplicateOtherStatsInstantly;
+local SavedFunctions = KNIT.Functions;
+
+if KNIT.Settings.ReplicateOtherStatsInstantly then
+	ReplicateOtherStatsInstantly = 0;
+else
+	ReplicateOtherStatsInstantly = KNIT.Settings.ReplicateOtherStatsBuffer or 0.33;
+end;
+local ShouldRun = KNIT.RunService:IsStudio() or KNIT.RunService:IsRunMode();
+
+local SaveDebugging = KNIT.Settings.SaveDebugging or false;
+local data = {};
+local MainDataStore = KNIT.DataStoreService:GetDataStore(KNIT.Settings.StatsVersion);
+local SaveDisable = KNIT.Settings.DisableLoading;
+function Saving.Save(player, InClose, LastData)
+	local IsID = type(player) == "number";
+	local PlayerID = IsID and player or player.UserId;
+	local PlrName = IsID and PlayerID or player.Name;
+	local DATALOL = LastData and data["u" .. PlayerID];
+	if DATALOL ~= nil then
+		if not SaveDisable then
+			local UpdatedData = KNIT.Datastore.Update(MainDataStore, PlayerID, function()
+				if InClose then
+					DATALOL.PlayingSession = false;
+				else
+					DATALOL.PlayingSession = false;
+				end;
+				DATALOL.LastSaveTimestamp = os.time();
+				local newsave = KNIT.Services.HttpService:JSONEncode(DATALOL);
+				return newsave;
+			end);
+			if SaveDebugging and UpdatedData then
+				print("Successfully saved " .. (PlrName) .. "'s stats!");
+			end;
+			if UpdatedData then
+				return UpdatedData;
+			end;
+			print("Failed to save " .. (PlrName).. "'s stats", true);
+		end
+	end;
+	return false;
+end;
+
+local SavePlayerID = KNIT.Settings.SavePlayerID or 0
+local RandomNeww = Random.new()
+function Saving.Retrieve(Player)
+	local Succes = false
+	local FirstTime = false
+	local tries = 0
+	local oldsave
+	local ReceiveError
+	local FinalData
+	while tries < 6 and not Succes and not FirstTime do
+		if not (tries < 6 and not Succes and not FirstTime) then break end;
+		if not Player then break end;
+		if not Player.Parent then break end;
+		local PlrID
+		if ShouldRun then
+			PlrID = SavePlayerID > 0 and SavePlayerID or Player.UserId
+		else
+			PlrID = Player.UserId
+		end
+		oldsave, Succes, ReceiveError = SaveDisable == false and KNIT.Datastore.Get(MainDataStore, PlrID) or nil, true, nil
+		if oldsave then
+			if type(oldsave) == "table" then
+				FinalData = oldsave;
+			else
+				FinalData = KNIT.Services.HttpService:JSONDecode(oldsave)
+			end
+		end
+		if ReceiveError ~= nil then
+			warn(tostring(ReceiveError))
+		end
+		if FinalData and FinalData.PlayingSession and (not ShouldRun) then
+			Succes = true
+			break
+		elseif (not FinalData) and Succes then
+			FirstTime = true
+			break
+		end
+		tries = tries + 1
+		if not Succes then
+			wait(RandomNeww:NextNumber(2, 5))
+		end	
+	end
+	if FinalData and FinalData.PlayingSession then
+		print("Stats were retrieved, but PlayingSession flag was saved as true. Ignore this if test session.", true)
+		Succes = true
+	end
+	if FirstTime then
+		if SaveDebugging then
+			print("New player, " .. Player.Name .. ", joined the game!")
+		end
+		return {}
+	end
+	if SaveDebugging then
+		if Succes then
+			if SaveDebugging then
+				print("Successfully retrieved stats for " .. Player.Name .. "!")
+			end
+		else
+			print("Failed to retrieve stats for " .. Player.Name .. "", true)
+		end
+	end
+	if not Succes then
+		warn('Returned stats as error!')
+		return "Error"
+	end
+	return FinalData;
+end;
+
+local InitDB = {}
+local SaveDB = {}
+function Saving.Init(player:Player)
+	if InitDB[player.UserId] then
+		return
+	end
+	InitDB[player.UserId] = true
+	local function Start()
+		if (not player) then return false;end;
+		local userid = player.UserId
+		while (data["u" .. userid] ~= nil or not (not SaveDB["u" .. userid])) and player do
+			if not player.Parent then
+				break
+			end
+			KNIT.Heartbeat()		
+		end
+		if data["u" .. userid] == nil and not SaveDB["u" .. userid] and player and player.Parent then
+			local PlayerData = Saving.Retrieve(player)
+
+			if PlayerData == "Error" then
+				print("KNIT.Saving.Init | MAJOR ERROR: Stats returned error for " .. player.Name .. "", true)
+				return false
+			elseif PlayerData then
+				if PlayerData.PlayingSession == true then
+					return false
+				end;
+				PlayerData.PlayingSession = true
+				if  not player or not player.Parent then
+					return false
+				else
+					if PlayerData then
+						data["u" .. userid] = PlayerData
+						for BaseStatsName, BaseStatsValue in pairs(KNIT.Settings.DefaultStats) do
+							if PlayerData[BaseStatsName] == nil then
+								data["u" .. userid][BaseStatsName] = type(BaseStatsValue) == "table" and KNIT.Functions.CloneTable(BaseStatsValue) or BaseStatsValue
+							end
+							if type(BaseStatsValue) == "table" then
+								for EsseTableName, EsseTableDefaltValue in pairs(BaseStatsValue) do
+									if PlayerData[BaseStatsName][EsseTableName] == nil then
+										data["u" .. userid][BaseStatsName][EsseTableName] = type(EsseTableDefaltValue) == "table" and KNIT.Functions.CloneTable(EsseTableDefaltValue) or EsseTableDefaltValue
+									end
+								end;
+							end;
+						end
+					else
+						data["u" .. userid] = KNIT.Functions.CloneTable(KNIT.Settings.DefaultStats)
+						data["u" .. userid].PlayingSession = true
+					end
+					KNIT.Signal.Fire("Player Added", player)
+					local CacheStats1 = {}
+					local CacheStats2 = {}
+					local LastChangeStats = os.clock()
+					Saving.Save(player, nil, data["u" .. userid])
+
+					while player and player.Parent and data["u" .. userid] do
+						local PlayerCacheStats = {}
+						for EsseStatsName, EsseStatsValue in pairs(data["u" .. userid]) do
+							local GetCache1 = CacheStats1[EsseStatsName]
+							local IsTable = type(EsseStatsValue) == "table"
+							if GetCache1 == nil then
+								--------------[[    START    ]]--------------
+								if IsTable then
+									local ClonedTable = KNIT.Functions.CloneTable(EsseStatsValue, false)
+									PlayerCacheStats[EsseStatsName] = ClonedTable
+									CacheStats1[EsseStatsName] = ClonedTable
+									CacheStats2[EsseStatsName] = ClonedTable
+								else
+									PlayerCacheStats[EsseStatsName] = EsseStatsValue
+									CacheStats1[EsseStatsName] = EsseStatsValue
+									CacheStats2[EsseStatsName] = EsseStatsValue
+								end
+								KNIT.Signal.Fire("Stat Changed", player, EsseStatsName)
+							elseif IsTable then
+								--------------[[    TABLE    ]]--------------
+								if not KNIT.Functions.CompareTable(EsseStatsValue, GetCache1) then
+									--warn(EsseStatsName);print(EsseStatsValue, GetCache1)
+									local ClonedTable = KNIT.Functions.CloneTable(EsseStatsValue, false)
+									PlayerCacheStats[EsseStatsName] = ClonedTable
+									CacheStats1[EsseStatsName] = ClonedTable
+									CacheStats2[EsseStatsName] = ClonedTable
+									KNIT.Signal.Fire("Stat Changed", player, EsseStatsName)
+									--warn("!")
+								end
+							elseif EsseStatsValue ~= GetCache1 then
+								--------------[[    NORMAL    ]]--------------
+								PlayerCacheStats[EsseStatsName] = EsseStatsValue
+								CacheStats1[EsseStatsName] = EsseStatsValue
+								CacheStats2[EsseStatsName] = EsseStatsValue
+								KNIT.Signal.Fire("Stat Changed", player, EsseStatsName)
+							end
+						end
+						if KNIT.Functions.DictionaryLength(PlayerCacheStats) > 0 then
+							KNIT.Network:FireClient(player, "New Stats", PlayerCacheStats, player);
+						end
+						if ReplicateOtherStatsInstantly <= (os.clock() - LastChangeStats) and KNIT.Functions.DictionaryLength(CacheStats2) > 0 then
+							LastChangeStats = os.clock()
+							for I, EssePlayer in ipairs(Players:GetPlayers()) do
+								if EssePlayer ~= player then
+									coroutine.wrap(function()
+										KNIT.Network:FireClient(EssePlayer, "New Stats", CacheStats2, player)
+									end)();
+								end;
+							end;
+							CacheStats2 = {};
+						end;
+						KNIT.Heartbeat();
+					end;
+					return true;
+				end;
+			end;
+		end;
+	end;
+	local Trys = 0
+	local Result = false
+	while not Result and Trys < 3 and player do
+		if not player.Parent then
+			break
+		end
+		Result = Start()
+		KNIT.Heartbeat()
+		if not Result and player then
+			Trys = Trys + 1
+			wait(0.5)
+		end	
+	end
+	if (not Result) and player then
+		print("MAJOR ERROR: Could not init " .. player.Name .. "'s stats!", true)
+		player:Kick("Something went wrong. Please rejoin!")
+	end
+	InitDB[player.UserId] = nil
+end
+--------------------------------------------------------------------------------------------------
+------------------ SOFT SHUTDOWN ------------------
+--> Configuration
+local ReserveCharacterPosition = true;
+--> Functions
+local function CFrameToArray(CoordinateFrame: CFrame)
+	return {CoordinateFrame:GetComponents()}
+end
+local function ArrayToCFrame(a: {number})
+	return CFrame.new(table.unpack(a))
+end
+local function TeleportedFunction(EssePlr:Player)
+	local TeleportData = EssePlr:GetJoinData().TeleportData
+
+	if TeleportData and TeleportData.isSoftShutdown == true then
+		local CoordinateFrame = TeleportData.CharacterCFrames[tostring(EssePlr.UserId)]
+
+		-- Teleport the player to their original position
+		if ReserveCharacterPosition and CoordinateFrame then
+			local Character = EssePlr.Character or EssePlr.CharacterAdded:Wait()
+			local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart") :: BasePart
+
+			if not EssePlr:HasAppearanceLoaded() then
+				EssePlr.CharacterAppearanceLoaded:Wait()
+			end
+
+			task.wait(0.1)
+			HumanoidRootPart:PivotTo(ArrayToCFrame(CoordinateFrame))
+		end
+	end
+end;
+--------------------------------------------------------------------------------------------------
+function Saving.GetAllPlayerDatas()
+	local AllUsers = {}
+
+	local success, Pages = pcall(function()
+		return MainDataStore:ListKeysAsync(nil, 100);
+	end);
+
+	if not success then
+		warn("Erro ao recuperar páginas: " .. tostring(Pages));
+		return AllUsers;
+	end;
+
+	while true do
+		local paginaAtual = Pages:GetCurrentPage();
+
+		for _, keyData in ipairs(paginaAtual) do
+			local isUserId = tonumber(keyData.KeyName);
+			if isUserId then
+				table.insert(AllUsers, isUserId);
+			end;
+		end;
+
+		if Pages.IsFinished then
+			break;
+		end;
+
+		Pages:AdvanceToNextPageAsync();
+	end;
+
+	return AllUsers;
+end;
+function Saving.GetHistory(player:Player)
+	local OneDay = os.time() - (24 * 60 * 60);
+
+	local Succes, Versions:DataStoreVersionPages = pcall(function()
+		return MainDataStore:ListVersionsAsync(player.UserId, Enum.SortDirection.Descending, nil, nil, 1);
+	end);
+
+	if Succes then
+		for Index, VersionInstance:DataStoreObjectVersionInfo in Versions:GetCurrentPage() do
+			if not Index then continue end;
+			warn("VersionData:", VersionInstance.Version);
+			print("Date: " .. os.date("%Y-%m-%d %H:%M:%S", VersionInstance.CreatedTime/1000))
+			local SuccesGetVersion, ResultGetVersion = pcall(function()
+				return KNIT.Services.HttpService:JSONDecode(MainDataStore:GetVersionAsync(player.UserId, VersionInstance.Version));
+			end);
+			if SuccesGetVersion then
+				print("Retrieved Version Data:", ResultGetVersion);
+				if data["u" .. player.UserId] then
+					--data["u" .. player.UserId] = ResultGetVersion -- Define o DataStore Antigo!
+				end;
+			else
+				warn(SuccesGetVersion, ResultGetVersion);
+			end;
+		end;
+	else
+		warn("Error Get Store Versions:", Versions, Succes);
+		return false, "Error Get Store Versions!";
+	end;
+end;
+--------------------------------------------------------------------------------------------------
+local function getPlayerByUserId(userId)
+	for _, player in pairs(Players:GetPlayers()) do
+		if player.UserId == userId then
+			return player;
+		end;
+	end;
+end;
+function Saving.Get(player, boolvalue)
+	if typeof(player) == "number" then
+		player = getPlayerByUserId(player);
+	elseif Players:FindFirstChild(tostring(player)) then
+		player = Players:FindFirstChild(tostring(player));
+	else
+		return;
+	end;
+	local val
+	if boolvalue == nil then
+		val = true
+	else
+		val = boolvalue
+	end
+	boolvalue = val
+	if not player then
+		return
+	end
+	if SaveDB["u" .. player.UserId] then
+		return
+	end
+	local playerdata = data["u" .. player.UserId]
+	if not playerdata then
+		pcall(function()
+			local osclock = os.clock()
+			if boolvalue then
+				while (not playerdata) and (os.clock() - osclock <= 5) and player and player.Parent do
+					KNIT.Heartbeat()
+					playerdata = data["u" .. player.UserId]				
+				end
+			end
+			if not playerdata and SaveDebugging then
+				print("Failed to index " .. player.Name .. "'s stats", true)
+			end
+		end)
+	end
+	return playerdata
+end
+function Saving.Remove(player)
+	local IsID = type(player) == "number"
+	local PlrID = IsID and player or player.UserId
+	if not pcall(function()
+			data["u" .. PlrID] = nil
+			wait(10)
+			SaveDB["u" .. PlrID] = nil
+		end) then
+		local PlrNameOrID = IsID and PlrID or player.Name
+		pcall(function()
+			print("Failed to remove session stats for " .. PlrNameOrID .. "!", true)
+		end)
+	end
+end
+function Saving.Reset(Player)
+	if data["u" .. Player.UserId] then
+		data["u" .. Player.UserId] = KNIT.Functions.CloneTable(KNIT.Settings.DefaultStats)
+		Saving.Save(Player)
+	end
+end
+function Saving.IsLoaded(Player)
+	local FindLoadedValue = Player and Player:FindFirstChild("__LOADED") ~= nil
+	return FindLoadedValue
+end
+local function PlayerAdded(player2)
+	coroutine.wrap(function()
+		Saving.Init(player2);
+	end)()
+end
+local function PlrRemoving(player3, IgnoreLeave)
+	local PlrID = type(player3) == "number" and player3 or player3.UserId
+	if data["u" .. PlrID] and not SaveDB["u" .. PlrID] then
+		SaveDB["u" .. PlrID] = true
+		Saving.Save(PlrID, true, data["u" .. PlrID])
+		wait(1)
+		if IgnoreLeave then
+			Saving.Remove(player3);
+		else
+			if Players:FindFirstChild(player3.Name) == nil then
+				Saving.Remove(player3)
+			else
+				repeat wait() until Players:FindFirstChild(player3.Name) == nil 
+				Saving.Remove(player3)
+			end
+		end;	
+	end;
+end;
+for i, EssePlr in ipairs(Players:GetPlayers()) do
+	PlayerAdded(EssePlr)
+end
+Players.PlayerAdded:Connect(PlayerAdded)
+Players.PlayerRemoving:Connect(PlrRemoving)
+coroutine.wrap(function()
+	while true do
+		for DataName, DataValue in pairs(data) do
+			local EsseID = tonumber(string.sub(DataName, 2))
+			if not SaveDB[DataName] and not Players:GetPlayerByUserId(EsseID) then
+				PlrRemoving(EsseID)
+			end;
+		end;
+		task.wait(1)
+	end;
+end)();
+function game.OnClose()
+	coroutine.wrap(function()
+		KNIT.Network:FireAllClients('Closing Now')
+	end)()
+	KNIT.Signal.Fire("Server Closing")
+	for i, v in ipairs(Players:GetPlayers()) do
+		coroutine.wrap(function()
+			if v then
+				Saving.Save(v, true)
+			end;
+		end)();
+	end;
+	task.wait();
+	local message = Instance.new("Message");
+	message.Text = "Server in shutdown(Not Exit), relogging for you!";
+	message.Parent = game.Workspace;
+	if not KNIT.RunService:IsStudio() then
+		workspace:SetAttribute("ShuttingDown", true)
+		local CurrentPlayers = Players:GetPlayers()
+		if not CurrentPlayers[1] then
+			return;
+		end;
+		-- Optional: Reserve character positions in the world
+		local CharacterCFrames = {};
+		if ReserveCharacterPosition then
+			for _, Player in CurrentPlayers do
+				local Character = Player.Character
+				local HumanoidRootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+				if HumanoidRootPart then
+					CharacterCFrames[tostring(Player.UserId)] = CFrameToArray(HumanoidRootPart.CFrame);
+				end;
+			end;
+		end;
+
+		-- Teleport the player(s)
+		local TeleportOptions = Instance.new("TeleportOptions")
+		TeleportOptions:SetTeleportData({
+			isSoftShutdown = true,
+			CharacterCFrames = CharacterCFrames;
+		});
+		wait(2)
+		local TeleportResult = TeleportService:TeleportAsync(game.PlaceId, CurrentPlayers, TeleportOptions);
+
+		-- Keep the server alive until all of the player(s) have been teleported.
+		while Players:GetPlayers()[1] do
+			task.wait(1)
+		end
+		wait(5);
+	else
+		task.wait();
+	end;
+end;
+local SavindDB = KNIT.Settings.SaveDuration or 60
+coroutine.wrap(function()
+	while true do
+		for i, v in pairs(data) do
+			if i and v then
+				wait(SavindDB / #Players:GetPlayers())
+				pcall(function()
+					local EssePlrID = tonumber(string.sub(i, 2))
+					local Esseplayer = Players:GetPlayerByUserId(EssePlrID)
+					if Esseplayer and not SaveDB["u" .. EssePlrID] and data["u" .. EssePlrID] then
+						coroutine.wrap(function()
+							Saving.Save(Esseplayer, nil, data["u" .. EssePlrID])
+						end)()
+					end
+				end)
+			end
+		end
+		KNIT.Heartbeat(10)	
+	end
+end)()
+
+KNIT.Network:BindFunctions({
+	["Get Stats"] = function(PlrInvoke, PlrAlvo, BoolValue) 
+		if not PlrAlvo then
+			PlrAlvo = PlrInvoke;
+		end;
+		local GettedData = Saving.Get(PlrAlvo, BoolValue);
+		if not GettedData then
+			GettedData = 'Error';
+			if PlrAlvo == PlrInvoke then
+				warn('Error Get Stats for' .. tostring(PlrInvoke.Name));
+			end;
+		end;
+		return GettedData;
+	end,
+	["RejoinPlayer"] = function(plr:Player) 
+		local TeleportOptions = Instance.new("TeleportOptions");
+		
+		local CharacterCFrames = {};
+		
+		local Character = plr.Character
+		local HumanoidRootPart = Character and Character:FindFirstChild("HumanoidRootPart")
+		if HumanoidRootPart then
+			CharacterCFrames[tostring(plr.UserId)] = CFrameToArray(HumanoidRootPart.CFrame);
+		end;
+		
+		TeleportOptions:SetTeleportData({
+			isSoftShutdown = true,
+			CharacterCFrames = CharacterCFrames;
+		});
+		PlrRemoving(plr, true);
+		wait(2);
+		local Stack = 0;
+		local success, result = nil, nil;
+		repeat
+			success, result = pcall(function()
+				return game["Teleport Service"]:TeleportAsync(game.PlaceId, {plr}, TeleportOptions);
+			end);
+			Stack += 1;
+			if plr then
+				KNIT.Network:FireClient(plr, "Error Teleport", "", 2, false)
+				task.wait(1);
+			end;
+		until (not plr) or (Stack >= 30);
+		if success then
+			return true, result;
+		else
+			plr:Kick("Error Reconecting, Plr Report Error in Discord!");
+			return false, result;
+		end;
+	end,
+});
+
+return Saving;
